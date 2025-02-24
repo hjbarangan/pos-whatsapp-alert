@@ -15,4 +15,4 @@ COPY . .
 EXPOSE 3001
 
 # Set the correct command to start the server
-CMD ["node", "whatsapp-server.js"]
+CMD ["node", "server.js"]
