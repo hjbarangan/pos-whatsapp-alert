@@ -1,20 +1,18 @@
 # Use official Node.js LTS image
 FROM node:18
 
-# Set working directory
-WORKDIR /app
+# Set working directory inside the container
+WORKDIR /usr/src/app
 
-# Copy package.json and package-lock.json
+# Copy package.json and install dependencies first
 COPY package*.json ./
-
-# Install dependencies
 RUN npm install
 
-# Copy the rest of the app files
+# Copy the rest of the application files
 COPY . .
 
-# Expose the port for the Express API
+# Expose the port for the API
 EXPOSE 3001
 
-# Run the WhatsApp bot server
+# Set the correct command to start the server
 CMD ["node", "whatsapp-server.js"]
