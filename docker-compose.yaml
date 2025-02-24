@@ -8,7 +8,7 @@ services:
     ports:
       - "3001:3001"
     volumes:
-      - ./whatsapp-session:/root/.wwebjs_auth
+      - ./whatsapp-session:/usr/src/app/.wwebjs_auth
     environment:
       - NODE_ENV=production
     stdin_open: true

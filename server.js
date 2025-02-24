@@ -8,7 +8,9 @@ app.use(express.json());
 
 const ENV = process.env.NODE_ENV || "development";
 const authPath =
-  ENV === "production" ? "/root/.wwebjs_auth" : path.join(__dirname, "session");
+  ENV === "production"
+    ? "/usr/src/app/.wwebjs_auth" // Docker
+    : path.join(__dirname, "session"); // Local development
 
 console.log(`🚀 Running in ${ENV} mode`);
 console.log(`📂 Using WhatsApp session path: ${authPath}`);
