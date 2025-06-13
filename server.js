@@ -62,11 +62,14 @@ app.post("/send-alert", async (req, res) => {
     backupFile,
     timestamp,
     errorMessage,
+    rawMessage
   } = req.body;
 
   let formattedMessage = "";
 
-  if (messageType === "backup_success") {
+  if (rawMessage) {
+    formattedMessage = rawMessage;
+  } else if (messageType === "backup_success") {
     formattedMessage =
       `✅ *Backup Completed Successfully!* ✅\n\n` +
       `🔹 *Timestamp:* \`${timestamp}\`\n` +
