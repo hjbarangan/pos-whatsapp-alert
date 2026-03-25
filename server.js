@@ -8,7 +8,12 @@ app.use(express.json());
 const client = new Client({
   authStrategy: new LocalAuth(),
   puppeteer: {
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    headless: true, // or "new"
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+    ],
   },
 });
 
@@ -20,6 +25,29 @@ client.on("qr", (qr) => {
 client.on("ready", () => {
   console.log("✅ WhatsApp Bot is ready!");
 });
+
+client.on("auth_failure", (msg) => {
+  console.error("Auth failure:", msg);
+});
+
+client.on("disconnected", (reason) => {
+  console.warn("Disconnected, restarting client:", reason);
+  setTimeout(() => safeInitializeClient(), 5000);
+});
+
+let initializeAttempts = 0;
+
+async function safeInitializeClient() {
+  initializeAttempts += 1;
+  const delayMs = Math.min(30000, 2000 * initializeAttempts);
+
+  try {
+    await client.initialize();
+  } catch (error) {
+    console.error("❌ client.initialize failed:", error);
+    setTimeout(safeInitializeClient, delayMs);
+  }
+}
 
 // FETCH GROUPS AND GROUP_IDS
 app.get("/groups", async (req, res) => {
@@ -62,7 +90,7 @@ app.post("/send-alert", async (req, res) => {
     backupFile,
     timestamp,
     errorMessage,
-    rawMessage
+    rawMessage,
   } = req.body;
 
   let formattedMessage = "";
@@ -126,8 +154,16 @@ app.post("/send-alert", async (req, res) => {
   }
 });
 
-client.initialize();
+safeInitializeClient();
 
 app.listen(3001, () => {
   console.log("🚀 WhatsApp API running on http://localhost:3001");
+});
+
+process.on("unhandledRejection", (err) => {
+  console.error("UNHANDLED PROMISE REJECTION", err);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("UNCAUGHT EXCEPTION", err);
 });
