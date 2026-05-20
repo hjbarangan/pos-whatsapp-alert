@@ -26,6 +26,8 @@ RUN apt-get update && apt-get install -y \
     libxss1 \
     libxtst6 \
     xdg-utils \
+    chromium \
+    --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy package.json and install dependencies
