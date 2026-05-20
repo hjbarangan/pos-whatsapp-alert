@@ -1,86 +1,195 @@
 const { Client, LocalAuth } = require("whatsapp-web.js");
 const qrcode = require("qrcode-terminal");
 const express = require("express");
+const { EventEmitter } = require("events");
+const { execSync } = require("child_process");
 
 const app = express();
 app.use(express.json());
 
+/**
+ * =========================================================
+ * MESSAGE QUEUE (in-memory production-safe queue)
+ * =========================================================
+ */
+const messageQueue = [];
+const queueEvents = new EventEmitter();
+
+let isProcessingQueue = false;
+
+/**
+ * =========================================================
+ * WHATSAPP CLIENT
+ * =========================================================
+ */
+
 const client = new Client({
-  authStrategy: new LocalAuth(),
+  authStrategy: new LocalAuth({
+    clientId: "backup-bot",
+  }),
   puppeteer: {
-    headless: true, // or "new"
+    headless: true,
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
+      "--disable-gpu",
     ],
   },
 });
 
+let isInitializing = false;
+let isReady = false;
+
+/**
+ * =========================================================
+ * CLEANUP (Docker Chromium fix)
+ * =========================================================
+ */
+function cleanupLocks() {
+  try {
+    execSync("find . -name 'Singleton*' -delete");
+  } catch {}
+}
+
+/**
+ * =========================================================
+ * INITIALIZE SAFELY
+ * =========================================================
+ */
+async function safeInit() {
+  if (isInitializing) return;
+
+  isInitializing = true;
+
+  try {
+    cleanupLocks();
+    await client.initialize();
+  } catch (err) {
+    console.error("Init error:", err);
+
+    setTimeout(() => {
+      safeInit();
+    }, 10000);
+  } finally {
+    isInitializing = false;
+  }
+}
+
+/**
+ * =========================================================
+ * QUEUE PROCESSOR (core production logic)
+ * =========================================================
+ */
+async function processQueue() {
+  if (isProcessingQueue) return;
+  isProcessingQueue = true;
+
+  while (true) {
+    const job = messageQueue.shift();
+
+    if (!job) break;
+
+    const { groupId, message, resolve, reject } = job;
+
+    try {
+      if (!isReady || !client.info) {
+        throw new Error("WhatsApp not ready");
+      }
+
+      await client.sendMessage(groupId, message);
+
+      resolve({ success: true });
+
+    } catch (err) {
+      console.error("Queue send failed:", err);
+
+      // retry later
+      messageQueue.push(job);
+
+      await new Promise((r) => setTimeout(r, 5000));
+      break;
+    }
+  }
+
+  isProcessingQueue = false;
+}
+
+/**
+ * Trigger queue processor
+ */
+queueEvents.on("new", processQueue);
+
+/**
+ * =========================================================
+ * EVENTS
+ * =========================================================
+ */
+
 client.on("qr", (qr) => {
-  console.log("Scan this QR code in WhatsApp:");
+  console.log("Scan QR:");
   qrcode.generate(qr, { small: true });
 });
 
 client.on("ready", () => {
-  console.log("✅ WhatsApp Bot is ready!");
+  console.log("✅ WhatsApp READY");
+  isReady = true;
+
+  processQueue();
 });
 
 client.on("auth_failure", (msg) => {
   console.error("Auth failure:", msg);
+  isReady = false;
 });
 
-client.on("disconnected", (reason) => {
-  console.warn("Disconnected, restarting client:", reason);
-  setTimeout(() => safeInitializeClient(), 5000);
-});
+client.on("disconnected", async (reason) => {
+  console.log("Disconnected:", reason);
 
-let initializeAttempts = 0;
-
-async function safeInitializeClient() {
-  initializeAttempts += 1;
-  const delayMs = Math.min(30000, 2000 * initializeAttempts);
+  isReady = false;
 
   try {
-    await client.initialize();
-  } catch (error) {
-    console.error("❌ client.initialize failed:", error);
-    setTimeout(safeInitializeClient, delayMs);
-  }
+    await client.destroy();
+  } catch {}
+
+  setTimeout(() => {
+    safeInit();
+  }, 10000);
+});
+
+/**
+ * =========================================================
+ * QUEUE WRAPPER FUNCTION
+ * =========================================================
+ */
+function enqueueMessage(groupId, message) {
+  return new Promise((resolve, reject) => {
+    messageQueue.push({ groupId, message, resolve, reject });
+
+    queueEvents.emit("new");
+  });
 }
 
-// FETCH GROUPS AND GROUP_IDS
-app.get("/groups", async (req, res) => {
-  try {
-    const chats = await client.getChats();
-    const groups = chats
-      .filter((chat) => chat.id.server === "g.us")
-      .map((group) => ({
-        name: group.name,
-        id: group.id._serialized,
-      }));
+/**
+ * =========================================================
+ * ROUTES
+ * =========================================================
+ */
 
-    res.json({ status: "success", groups });
-  } catch (error) {
-    res.status(500).json({ status: "error", message: error.message });
-  }
-});
-
-// SEND NOTIFICATION WITH DYNAMIC GROUP_ID AND MESSAGE
 app.post("/send", async (req, res) => {
   const { groupId, message } = req.body;
 
   try {
-    await client.sendMessage(groupId, message);
-    console.log(`✅ Message sent to group ${groupId}: ${message}`);
-    res.json({ status: "success", message: `Sent to group ${groupId}` });
-  } catch (error) {
-    console.error(`❌ Error sending message: ${error}`);
-    res.status(500).json({ status: "error", message: "Failed to send" });
+    const result = await enqueueMessage(groupId, message);
+    res.json({ status: "queued", result });
+  } catch (err) {
+    res.status(500).json({ status: "error", message: err.message });
   }
 });
 
-// SEND NOTIFICATION WITH FORMATTED MESSAGE
+/**
+ * ALERT ROUTE
+ */
 app.post("/send-alert", async (req, res) => {
   const {
     groupId,
@@ -93,77 +202,72 @@ app.post("/send-alert", async (req, res) => {
     rawMessage,
   } = req.body;
 
-  let formattedMessage = "";
+  let formatted = "";
 
   if (rawMessage) {
-    formattedMessage = rawMessage;
-  } else if (messageType === "backup_success") {
-    formattedMessage =
-      `✅ *Backup Completed Successfully!* ✅\n\n` +
-      `🔹 *Timestamp:* \`${timestamp}\`\n` +
-      `🔹 *Server:* \`${server}\`\n` +
-      `🔹 *Database:* \`${database}\`\n` +
-      `🔹 *Backup File:* \`${backupFile}\``;
-  } else if (messageType === "backup_failure") {
-    formattedMessage =
-      `🚨 *Backup Failed!* 🚨\n\n` +
-      `🔹 *Timestamp:* \`${timestamp}\`\n` +
-      `🔹 *Server:* \`${server}\`\n` +
-      `🔹 *Database:* \`${database}\`\n` +
-      `🔹 *Attempted Backup Path:* \`${backupFile}\`\n\n` +
-      `*Error Message: *\n\`\`\`\n${errorMessage}\n\`\`\``;
-  } else if (messageType === "restore_success") {
-    formattedMessage =
-      `✅ *Restoration Completed Successfully!* ✅\n\n` +
-      `🔹 *Timestamp:* \`${timestamp}\`\n` +
-      `🔹 *Server:* \`${server}\`\n` +
-      `🔹 *Restored Database:* \`${database}\`\n` +
-      `🔹 *Backup File:* \`${backupFile}\``;
-  } else if (messageType === "restore_failure") {
-    formattedMessage =
-      `🚨 *Restoration Failed!* 🚨\n\n` +
-      `🔹 *Timestamp:* \`${timestamp}\`\n` +
-      `🔹 *Server:* \`${server}\`\n` +
-      `🔹 *Database:* \`${database}\`\n` +
-      `🔹 *Backup File:* \`${backupFile}\`\n\n` +
-      `*Error Message: *\n\`\`\`\n${errorMessage}\n\`\`\``;
-  } else if (messageType === "validation_failure") {
-    formattedMessage =
-      `❌ *Validation Failed!* ❌\n\n` +
-      `🔹 *Timestamp:* \`${timestamp}\`\n` +
-      `🔹 *Server:* \`${server}\`\n` +
-      `🔹 *Database:* \`${database}\`\n` +
-      `🔹 *Backup File:* \`${backupFile}\`\n\n` +
-      `*Error Message: *\n\`\`\`\n${errorMessage}\n\`\`\``;
-  } else if (messageType === "validation_success") {
-    formattedMessage =
-      `✅ *Validation Success!* ✅\n\n` +
-      `🔹 *Timestamp:* \`${timestamp}\`\n` +
-      `🔹 *Server:* \`${server}\`\n` +
-      `🔹 *Database:* \`${database}\`\n` +
-      `🔹 *Backup File:* \`${backupFile}\``;
+    formatted = rawMessage;
+  } else {
+    formatted =
+      `📢 *${messageType?.toUpperCase() || "NOTIFICATION"}*\n\n` +
+      `🕒 ${timestamp}\n` +
+      `🖥 ${server}\n` +
+      `🗄 ${database}\n` +
+      `📁 ${backupFile || ""}\n` +
+      (errorMessage ? `\n❌ ${errorMessage}` : "");
   }
 
   try {
-    await client.sendMessage(groupId, formattedMessage);
-    console.log(`✅ Message sent to group ${groupId}:\n${formattedMessage}`);
-    res.json({ status: "success", message: `Sent to group ${groupId}` });
-  } catch (error) {
-    console.error(`❌ Error sending message: ${error}`);
-    res.status(500).json({ status: "error", message: "Failed to send" });
+    await enqueueMessage(groupId, formatted);
+    res.json({ status: "queued" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-safeInitializeClient();
+/**
+ * GROUPS (safe check)
+ */
+app.get("/groups", async (req, res) => {
+  try {
+    if (!isReady || !client.info) {
+      return res.status(503).json({
+        status: "error",
+        message: "WhatsApp not ready",
+      });
+    }
 
+    const chats = await client.getChats();
+
+    const groups = chats
+      .filter((c) => c.id.server === "g.us")
+      .map((g) => ({
+        name: g.name,
+        id: g.id._serialized,
+      }));
+
+    res.json({ status: "success", groups });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * =========================================================
+ * STARTUP
+ * =========================================================
+ */
+
+safeInit();
+
+/**
+ * API ALWAYS STARTS (IMPORTANT FOR PROD)
+ */
 app.listen(3001, () => {
-  console.log("🚀 WhatsApp API running on http://localhost:3001");
+  console.log("🚀 API running on http://localhost:3001");
 });
 
-process.on("unhandledRejection", (err) => {
-  console.error("UNHANDLED PROMISE REJECTION", err);
-});
-
-process.on("uncaughtException", (err) => {
-  console.error("UNCAUGHT EXCEPTION", err);
-});
+/**
+ * SAFETY HANDLERS
+ */
+process.on("unhandledRejection", console.error);
+process.on("uncaughtException", console.error);
