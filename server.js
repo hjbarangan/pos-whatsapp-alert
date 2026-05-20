@@ -114,12 +114,18 @@ async function processQueue() {
       } else {
         messageQueue.push(job);
       }
-      setTimeout(() => queueEvents.emit("new"), 5000);
-      continue;
+
+      isProcessingQueue = false;
+
+      const delay = Math.min(30000, 5000 * job.attempts);
+
+      setTimeout(() => {
+        queueEvents.emit("new");
+      }, delay);
+
+      return;
     }
   }
-
-  isProcessingQueue = false;
 }
 
 /**
