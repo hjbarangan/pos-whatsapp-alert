@@ -48,8 +48,14 @@ let isReady = false;
  */
 function cleanupLocks() {
   try {
-    execSync("find . -name 'Singleton*' -delete");
-  } catch {}
+    execSync(`
+      if [ -d /usr/src/app/.wwebjs_auth ]; then
+        find /usr/src/app/.wwebjs_auth -name 'Singleton*' -delete
+      fi
+    `);
+  } catch (e) {
+    console.error("Cleanup error:", e.message);
+  }
 }
 
 /**
@@ -85,12 +91,12 @@ async function processQueue() {
   if (isProcessingQueue) return;
   isProcessingQueue = true;
 
-  while (true) {
+  while (messageQueue.length > 0) {
     const job = messageQueue.shift();
 
     if (!job) break;
 
-    const { groupId, message, resolve, reject } = job;
+    const { groupId, message } = job;
 
     try {
       if (!isReady || !client.info) {
@@ -98,16 +104,18 @@ async function processQueue() {
       }
 
       await client.sendMessage(groupId, message);
-
-      resolve({ success: true });
-
     } catch (err) {
       console.error("Queue send failed:", err);
 
-      // retry later
-      messageQueue.push(job);
+      job.attempts += 1;
+
+      if (job.attempts > 5) {
+        console.error("Dropping failed job:", job);
+      } else {
+        messageQueue.push(job);
+      }
       setTimeout(() => queueEvents.emit("new"), 5000);
-      break;
+      continue;
     }
   }
 
@@ -161,12 +169,21 @@ client.on("disconnected", async (reason) => {
  * QUEUE WRAPPER FUNCTION
  * =========================================================
  */
-function enqueueMessage(groupId, message) {
-  return new Promise((resolve, reject) => {
-    messageQueue.push({ groupId, message, resolve, reject });
+const MAX_QUEUE_SIZE = 10000;
 
-    queueEvents.emit("new");
+function enqueueMessage(groupId, message) {
+  if (messageQueue.length >= MAX_QUEUE_SIZE) {
+    throw new Error("Queue full");
+  }
+
+  messageQueue.push({
+    groupId,
+    message,
+    attempts: 0,
+    createdAt: Date.now(),
   });
+
+  queueEvents.emit("new");
 }
 
 /**
