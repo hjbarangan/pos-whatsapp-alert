@@ -106,8 +106,7 @@ async function processQueue() {
 
       // retry later
       messageQueue.push(job);
-
-      await new Promise((r) => setTimeout(r, 5000));
+      setTimeout(() => queueEvents.emit("new"), 5000);
       break;
     }
   }
@@ -180,8 +179,8 @@ app.post("/send", async (req, res) => {
   const { groupId, message } = req.body;
 
   try {
-    const result = await enqueueMessage(groupId, message);
-    res.json({ status: "queued", result });
+    enqueueMessage(groupId, message);
+    res.json({ status: "queued" });
   } catch (err) {
     res.status(500).json({ status: "error", message: err.message });
   }
@@ -217,7 +216,7 @@ app.post("/send-alert", async (req, res) => {
   }
 
   try {
-    await enqueueMessage(groupId, formatted);
+    enqueueMessage(groupId, formatted);
     res.json({ status: "queued" });
   } catch (err) {
     res.status(500).json({ error: err.message });
