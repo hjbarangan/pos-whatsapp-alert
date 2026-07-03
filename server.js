@@ -202,16 +202,77 @@ app.post("/send", async (req, res) => {
   const { groupId, message } = req.body;
 
   try {
-    enqueueMessage(groupId, message);
-    res.json({ status: "queued" });
+    if (!isReady || !client.info) {
+      return res.status(503).json({
+        status: "error",
+        message: "WhatsApp not ready",
+      });
+    }
+
+    await client.sendMessage(groupId, message);
+
+    res.json({
+      status: "success",
+      message: "Message sent",
+    });
   } catch (err) {
-    res.status(500).json({ status: "error", message: err.message });
+    console.error("Send failed:", err);
+
+    res.status(500).json({
+      status: "error",
+      message: err.message,
+    });
   }
 });
 
+// Sending Message with Queue (uncomment to use queue instead of direct send)
+// app.post("/send", async (req, res) => {
+//   const { groupId, message } = req.body;
+
+//   try {
+//     enqueueMessage(groupId, message);
+//     res.json({ status: "queued" });
+//   } catch (err) {
+//     res.status(500).json({ status: "error", message: err.message });
+//   }
+// });
 /**
  * ALERT ROUTE
  */
+// app.post("/send-alert", async (req, res) => {
+//   const {
+//     groupId,
+//     messageType,
+//     server,
+//     database,
+//     backupFile,
+//     timestamp,
+//     errorMessage,
+//     rawMessage,
+//   } = req.body;
+
+//   let formatted = "";
+
+//   if (rawMessage) {
+//     formatted = rawMessage;
+//   } else {
+//     formatted =
+//       `📢 *${messageType?.toUpperCase() || "NOTIFICATION"}*\n\n` +
+//       `🕒 ${timestamp}\n` +
+//       `🖥 ${server}\n` +
+//       `🗄 ${database}\n` +
+//       `📁 ${backupFile || ""}\n` +
+//       (errorMessage ? `\n❌ ${errorMessage}` : "");
+//   }
+
+//   try {
+//     enqueueMessage(groupId, formatted);
+//     res.json({ status: "queued" });
+//   } catch (err) {
+//     res.status(500).json({ error: err.message });
+//   }
+// });
+
 app.post("/send-alert", async (req, res) => {
   const {
     groupId,
@@ -239,10 +300,35 @@ app.post("/send-alert", async (req, res) => {
   }
 
   try {
-    enqueueMessage(groupId, formatted);
-    res.json({ status: "queued" });
+    if (!isReady || !client.info) {
+      return res.status(503).json({
+        status: "error",
+        message: "WhatsApp not ready",
+      });
+    }
+
+    const chat = await client.getChatById(groupId);
+
+    if (!chat) {
+      return res.status(404).json({
+        status: "error",
+        message: "Group not found",
+      });
+    }
+
+    await chat.sendMessage(formatted);
+
+    res.json({
+      status: "success",
+      message: "Alert sent",
+    });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("Alert send failed:", err);
+
+    res.status(500).json({
+      status: "error",
+      message: err.message,
+    });
   }
 });
 
